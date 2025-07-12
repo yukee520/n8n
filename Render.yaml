@@ -1,13 +1,15 @@
-services:
+  services:
   - type: web
     name: n8n-supabase
     env: docker
     dockerfilePath: Dockerfile
+    plan: free
     envVars:
+      - key: N8N_ENCRYPTION_KEY
+        generateValue: true
+      - key: N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS
+        value: "true"
       - key: SUPABASE_URL
         value: https://bbhgccqzpkjkfrtzoxpz.supabase.co
       - key: SUPABASE_KEY
-        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJiaGdjY3F6cGtqa2ZydHpveHB6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyODQyNTQsImV4cCI6MjA2Nzg2MDI1NH0.m1fz-6qJblDwLocUwqRP4ivzRz6fn1f19DgVO7EWwf8
-      - key: N8N_DB_TYPE
-        value: sqlite
-    plan: free
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJiaGdjY3F6cGtqa2ZydHpveHB6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyODQyNTQsImV4cCI6MjA2Nzg
