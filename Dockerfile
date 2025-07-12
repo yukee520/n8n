@@ -1,4 +1,4 @@
-# Stage 1 - Builder (with correct Node version)
+# Stage 1 - Builder
 FROM node:20-alpine AS builder
 RUN apk add --no-cache python3 make g++
 RUN npm install -g n8n@1.101.2 @supabase/supabase-js
@@ -19,7 +19,7 @@ RUN mkdir -p /home/node/.n8n && \
 USER node
 ENV N8N_CONFIG_FILES=/home/node/.n8n/config
 ENV NODE_ENV=production
-ENV N8N_DISABLE_SQLITE=true  # Force Supabase API usage
+ENV N8N_DISABLE_SQLITE=true
 
 EXPOSE 5678
 CMD ["n8n", "start"]
