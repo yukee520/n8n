@@ -2,8 +2,12 @@
 FROM node:20-alpine AS builder
 RUN apk add --no-cache python3 make g++
 
-# Explicitly set package manager
-RUN corepack enable pnpm
+# Explicitly set package manager before corepack
+RUN npm install -g npm@10.8.2
+RUN corepack enable
+RUN corepack prepare npm@10.8.2 --activate
+
+# Install n8n globally
 RUN npm install -g n8n@1.101.2 @supabase/supabase-js
 
 # Stage 2 - Runtime
@@ -14,9 +18,8 @@ ENTRYPOINT ["/sbin/tini", "--"]
 # Copy installed packages
 COPY --from=builder /usr/local/lib/node_modules /usr/local/lib/node_modules
 
-# Create necessary symlinks
-RUN ln -s /usr/local/lib/node_modules/n8n/bin/n8n /usr/local/bin/n8n && \
-    ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+# Create symlinks
+RUN ln -s /usr/local/lib/node_modules/n8n/bin/n8n /usr/local/bin/n8n
 
 # Setup environment
 RUN mkdir -p /home/node/.n8n && \
