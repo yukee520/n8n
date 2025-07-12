@@ -1,34 +1,24 @@
-# Stage 1 - Builder
-FROM node:20-alpine AS builder
-RUN apk add --no-cache python3 make g++
+FROM n8nio/n8n:1.101.2
 
-# Explicitly set package manager before corepack
-RUN npm install -g npm@10.8.2
-RUN corepack enable
-RUN corepack prepare npm@10.8.2 --activate
+# Force PostgreSQL connection
+ENV N8N_DB_TYPE=postgresdb
+ENV N8N_DB_POSTGRESDB_HOST=aws-0-ap-southeast-1.pooler.supabase.com
+ENV N8N_DB_POSTGRESDB_USER=postgres
+ENV N8N_DB_POSTGRESDB_PASSWORD="5201314-Yukee"
+ENV N8N_DB_POSTGRESDB_DATABASE=postgres
+ENV N8N_DB_POSTGRESDB_PORT=5432
+ENV N8N_DB_POSTGRESDB_SSL=true
+ENV N8N_DB_POSTGRESDB_SSLMODE=require
+ENV N8N_DB_SKIP_MIGRATION=false
 
-# Install n8n globally
-RUN npm install -g n8n@1.101.2 @supabase/supabase-js
+# Disable tunnel (causing issues)
+ENV N8N_DISABLE_TUNNEL=true
 
-# Stage 2 - Runtime
-FROM node:20-alpine
-RUN apk add --no-cache tini
-ENTRYPOINT ["/sbin/tini", "--"]
+# Proper logging level
+ENV N8N_LOG_LEVEL=debug
 
-# Copy installed packages
-COPY --from=builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+# Task runner config
+ENV N8N_RUNNER_JWT_SECRET=your_random_secret_here
+ENV N8N_RUNNER_PORT=5679
 
-# Create symlinks
-RUN ln -s /usr/local/lib/node_modules/n8n/bin/n8n /usr/local/bin/n8n
-
-# Setup environment
-RUN mkdir -p /home/node/.n8n && \
-    chown -R node:node /home/node
-
-USER node
-ENV N8N_CONFIG_FILES=/home/node/.n8n/config
-ENV NODE_ENV=production
-ENV N8N_DISABLE_SQLITE=true
-
-EXPOSE 5678
 CMD ["n8n", "start"]
