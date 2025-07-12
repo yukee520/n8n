@@ -1,21 +1,24 @@
-# Use official n8n image with all dependencies pre-installed
-FROM n8nio/n8n:1.101.2
+# Stage 1 - Builder
+FROM node:18-alpine AS builder
+RUN apk add --no-cache python3 make g++
+RUN npm install -g n8n@1.101.2 @supabase/supabase-js
 
-# Only configure necessary permissions
+# Stage 2 - Runtime
+FROM node:18-alpine
+RUN apk add --no-cache tini
+ENTRYPOINT ["/sbin/tini", "--"]
+
+# Copy installed packages
+COPY --from=builder /usr/local/bin/n8n /usr/local/bin/n8n
+COPY --from=builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+# Setup environment
 RUN mkdir -p /home/node/.n8n && \
-    chown -R node:node /home/node/.n8n
+    chown -R node:node /home/node
 
-# Install ONLY additional dependencies (Supabase client)
 USER node
-RUN mkdir -p /home/node/node_modules && \
-    npm install --prefix /home/node @supabase/supabase-js
-
-# Environment variables
-ENV NODE_PATH=/home/node/node_modules
-ENV N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+ENV N8N_CONFIG_FILES=/home/node/.n8n/config
 ENV NODE_ENV=production
 
-# Health check
-HEALTHCHECK --interval=30s CMD node -e "require('axios').get('http://localhost:5678/healthz').catch(()=>process.exit(1))"
-
+EXPOSE 5678
 CMD ["n8n", "start"]
