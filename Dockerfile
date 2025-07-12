@@ -8,9 +8,12 @@ FROM node:20-alpine
 RUN apk add --no-cache tini
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Copy installed packages
-COPY --from=builder /usr/local/bin/n8n /usr/local/bin/n8n
+# Copy ALL required node_modules
 COPY --from=builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+# Create symlinks for binaries
+RUN ln -s /usr/local/lib/node_modules/n8n/bin/n8n /usr/local/bin/n8n && \
+    ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 
 # Setup environment
 RUN mkdir -p /home/node/.n8n && \
