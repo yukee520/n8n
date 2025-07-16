@@ -1,24 +1,30 @@
-import { supabase } from '../supabaseClient';
+import { supabase } from './supabaseClient';
 
-export async function syncWorkflowToSupabase(workflow: {
-  id: string;
-  user_id: string;
-  name: string;
-  config: any;
-}) {
-  const { data, error } = await supabase.from('workflows').upsert(
+export async function saveWorkflowToSupabase(userId: string, name: string, data: any) {
+  const { error } = await supabase.from('workflows').insert([
     {
-      id: workflow.id,
-      user_id: workflow.user_id,
-      name: workflow.name,
-      config: workflow.config,
+      user_id: userId,
+      name,
+      data,
+      created_at: new Date().toISOString(),
     },
-    { onConflict: 'id' }
-  );
+  ]);
 
   if (error) {
-    console.error('[SUPABASE] Failed to sync workflow:', error.message);
-  } else {
-    console.log('[SUPABASE] Synced workflow:', data);
+    throw new Error('❌ Supabase workflow save failed: ' + error.message);
   }
+}
+
+export async function getWorkflowsByUser(userId: string) {
+  const { data, error } = await supabase
+    .from('workflows')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error('❌ Failed to fetch workflows: ' + error.message);
+  }
+
+  return data;
 }
