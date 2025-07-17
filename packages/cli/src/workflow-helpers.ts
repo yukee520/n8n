@@ -8,34 +8,29 @@ import type {
 	IWorkflowBase,
 } from 'n8n-workflow';
 import { v4 as uuid } from 'uuid';
-
 import { VariablesService } from '@/environments.ee/variables/variables.service.ee';
+import { createClient } from '@supabase/supabase-js';
 
-/**
- * Returns the data of the last executed node
- */
+const supabaseUrl = process.env.SUPABASE_URL!;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE!;
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Return data of last executed node
 export function getDataLastExecutedNodeData(inputData: IRun): ITaskData | undefined {
-	const { runData, pinData = {} } = inputData.data.resultData;
-	const { lastNodeExecuted } = inputData.data.resultData;
+	const { runData, pinData = {}, lastNodeExecuted } = inputData.data.resultData;
 
-	if (lastNodeExecuted === undefined) {
-		return undefined;
-	}
-
-	if (runData[lastNodeExecuted] === undefined) {
-		return undefined;
-	}
+	if (!lastNodeExecuted || !runData[lastNodeExecuted]) return undefined;
 
 	const lastNodeRunData = runData[lastNodeExecuted][runData[lastNodeExecuted].length - 1];
-
 	let lastNodePinData = pinData[lastNodeExecuted];
 
 	if (lastNodePinData && inputData.mode === 'manual') {
 		if (!Array.isArray(lastNodePinData)) lastNodePinData = [lastNodePinData];
 
-		const itemsPerRun = lastNodePinData.map((item, index) => {
-			return { json: item, pairedItem: { item: index } };
-		});
+		const itemsPerRun = lastNodePinData.map((item, index) => ({
+			json: item,
+			pairedItem: { item: index },
+		}));
 
 		return {
 			startTime: 0,
@@ -49,133 +44,83 @@ export function getDataLastExecutedNodeData(inputData: IRun): ITaskData | undefi
 	return lastNodeRunData;
 }
 
-/**
- * Set node ids if not already set
- */
+// Assign UUID to nodes without an ID
 export function addNodeIds(workflow: IWorkflowBase) {
-	const { nodes } = workflow;
-	if (!nodes) return;
-
-	nodes.forEach((node) => {
+	workflow.nodes?.forEach((node) => {
 		if (!node.id) {
 			node.id = uuid();
 		}
 	});
 }
 
-// Checking if credentials of old format are in use and run a DB check if they might exist uniquely
+// Replace deprecated or missing credentials
 export async function replaceInvalidCredentials<T extends IWorkflowBase>(workflow: T): Promise<T> {
 	const { nodes } = workflow;
 	if (!nodes) return workflow;
 
-	// caching
 	const credentialsByName: Record<string, Record<string, INodeCredentialsDetails>> = {};
 	const credentialsById: Record<string, Record<string, INodeCredentialsDetails>> = {};
 
-	// for loop to run DB fetches sequential and use cache to keep pressure off DB
-	// trade-off: longer response time for less DB queries
-
 	for (const node of nodes) {
-		if (!node.credentials || node.disabled) {
-			continue;
-		}
-		// extract credentials types
-		const allNodeCredentials = Object.entries(node.credentials);
-		for (const [nodeCredentialType, nodeCredentials] of allNodeCredentials) {
-			// Check if Node applies old credentials style
-			if (typeof nodeCredentials === 'string' || nodeCredentials.id === null) {
-				const name = typeof nodeCredentials === 'string' ? nodeCredentials : nodeCredentials.name;
-				// init cache for type
-				if (!credentialsByName[nodeCredentialType]) {
-					credentialsByName[nodeCredentialType] = {};
+		if (!node.credentials || node.disabled) continue;
+
+		for (const [type, credential] of Object.entries(node.credentials)) {
+			// Handle name-based credentials
+			if (typeof credential === 'string' || credential.id === null) {
+				const name = typeof credential === 'string' ? credential : credential.name;
+
+				credentialsByName[type] ??= {};
+
+				if (!credentialsByName[type][name]) {
+					const matches = await Container.get(CredentialsRepository).findBy({ name, type });
+					credentialsByName[type][name] = matches?.[0]
+						? { id: matches[0].id, name: matches[0].name }
+						: { id: null, name };
 				}
-				if (credentialsByName[nodeCredentialType][name] === undefined) {
-					const credentials = await Container.get(CredentialsRepository).findBy({
-						name,
-						type: nodeCredentialType,
+
+				node.credentials[type] = credentialsByName[type][name];
+			} else {
+				credentialsById[type] ??= {};
+
+				if (!credentialsById[type][credential.id]) {
+					const match = await Container.get(CredentialsRepository).findOneBy({
+						id: credential.id,
+						type,
 					});
-					// if credential name-type combination is unique, use it
-					if (credentials?.length === 1) {
-						credentialsByName[nodeCredentialType][name] = {
-							id: credentials[0].id,
-							name: credentials[0].name,
-						};
-						node.credentials[nodeCredentialType] = credentialsByName[nodeCredentialType][name];
-						continue;
+
+					if (match) {
+						credentialsById[type][credential.id] = { id: match.id, name: match.name };
+					} else {
+						const byName = await Container.get(CredentialsRepository).findBy({
+							name: credential.name,
+							type,
+						});
+						if (byName?.length === 1) {
+							credentialsById[type][byName[0].id] = {
+								id: byName[0].id,
+								name: byName[0].name,
+							};
+						} else {
+							credentialsById[type][credential.id] = credential;
+						}
 					}
-
-					// nothing found - add invalid credentials to cache to prevent further DB checks
-					credentialsByName[nodeCredentialType][name] = {
-						id: null,
-						name,
-					};
-				} else {
-					// get credentials from cache
-					node.credentials[nodeCredentialType] = credentialsByName[nodeCredentialType][name];
-				}
-				continue;
-			}
-
-			// Node has credentials with an ID
-
-			// init cache for type
-			if (!credentialsById[nodeCredentialType]) {
-				credentialsById[nodeCredentialType] = {};
-			}
-
-			// check if credentials for ID-type are not yet cached
-			if (credentialsById[nodeCredentialType][nodeCredentials.id] === undefined) {
-				// check first if ID-type combination exists
-				const credentials = await Container.get(CredentialsRepository).findOneBy({
-					id: nodeCredentials.id,
-					type: nodeCredentialType,
-				});
-				if (credentials) {
-					credentialsById[nodeCredentialType][nodeCredentials.id] = {
-						id: credentials.id,
-						name: credentials.name,
-					};
-					node.credentials[nodeCredentialType] =
-						credentialsById[nodeCredentialType][nodeCredentials.id];
-					continue;
-				}
-				// no credentials found for ID, check if some exist for name
-				const credsByName = await Container.get(CredentialsRepository).findBy({
-					name: nodeCredentials.name,
-					type: nodeCredentialType,
-				});
-				// if credential name-type combination is unique, take it
-				if (credsByName?.length === 1) {
-					// add found credential to cache
-					credentialsById[nodeCredentialType][credsByName[0].id] = {
-						id: credsByName[0].id,
-						name: credsByName[0].name,
-					};
-					node.credentials[nodeCredentialType] =
-						credentialsById[nodeCredentialType][credsByName[0].id];
-					continue;
 				}
 
-				// nothing found - add invalid credentials to cache to prevent further DB checks
-				credentialsById[nodeCredentialType][nodeCredentials.id] = nodeCredentials;
-				continue;
+				node.credentials[type] = credentialsById[type][credential.id];
 			}
-
-			// get credentials from cache
-			node.credentials[nodeCredentialType] =
-				credentialsById[nodeCredentialType][nodeCredentials.id];
 		}
 	}
 
 	return workflow;
 }
 
+// Load cached variables (if using n8n enterprise envs)
 export async function getVariables(): Promise<IDataObject> {
 	const variables = await Container.get(VariablesService).getAllCached();
 	return Object.freeze(
-		variables.reduce((prev, curr) => {
-			prev[curr.key] = curr.value;
-			return prev;
-		}, {} as IDataObject),
+		variables.reduce((acc, curr) => {
+			acc[curr.key] = curr.value;
+			return acc;
+		}, {} as IDataObject)
 	);
 }
