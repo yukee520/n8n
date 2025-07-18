@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-non-null-assertion */
+// ✅ packages/cli/src/services/user.service.ts
 
 import type { RoleChangeRequestDto } from '@n8n/api-types';
 import type { PublicUser } from '@n8n/db';
@@ -28,12 +28,14 @@ export class UserService {
     private readonly urlService: UrlService,
     private readonly eventService: EventService,
     private readonly publicApiKeyService: PublicApiKeyService,
-    private readonly supabaseHelper: SupabaseHelper,
   ) {}
 
   async update(userId: string, data: Partial<User>) {
     const user = await this.userRepository.findOneBy({ id: userId });
-    if (user) await this.userRepository.save({ ...user, ...data }, { transaction: true });
+    if (user) {
+      const updated = await this.userRepository.save({ ...user, ...data }, { transaction: true });
+      await SupabaseHelper.insertOrUpdateUser(updated);
+    }
   }
 
   getManager() {
@@ -42,7 +44,8 @@ export class UserService {
 
   async updateSettings(userId: string, newSettings: Partial<IUserSettings>) {
     const user = await this.userRepository.findOneOrFail({ where: { id: userId } });
-    user.settings ? Object.assign(user.settings, newSettings) : (user.settings = newSettings);
+    if (user.settings) Object.assign(user.settings, newSettings);
+    else user.settings = newSettings;
     await this.userRepository.save(user);
   }
 
@@ -70,8 +73,11 @@ export class UserService {
     if (options?.withInviteUrl && options?.inviterId && publicUser.isPending)
       publicUser = this.addInviteUrl(options.inviterId, publicUser);
 
-    if (options?.posthog) publicUser = await this.addFeatureFlags(publicUser, options.posthog);
-    if (options?.withScopes) publicUser.globalScopes = getGlobalScopes(user);
+    if (options?.posthog)
+      publicUser = await this.addFeatureFlags(publicUser, options.posthog);
+
+    if (options?.withScopes)
+      publicUser.globalScopes = getGlobalScopes(user);
 
     return publicUser;
   }
@@ -87,9 +93,11 @@ export class UserService {
 
   private async addFeatureFlags(publicUser: PublicUser, posthog: PostHogClient) {
     const timeoutPromise = new Promise<PublicUser>((resolve) => setTimeout(() => resolve(publicUser), 1500));
-    const flags = await posthog.getFeatureFlags(publicUser);
-    publicUser.featureFlags = flags;
-    return publicUser;
+    const fetchPromise = (async () => {
+      publicUser.featureFlags = await posthog.getFeatureFlags(publicUser);
+      return publicUser;
+    })();
+    return await Promise.race([fetchPromise, timeoutPromise]);
   }
 
   private async sendEmails(
@@ -98,7 +106,6 @@ export class UserService {
     role: AssignableGlobalRole,
   ) {
     const domain = this.urlService.getInstanceBaseUrl();
-
     return await Promise.all(
       Object.entries(toInviteUsers).map(async ([email, id]) => {
         const inviteAcceptUrl = `${domain}/signup?inviterId=${owner.id}&inviteeId=${id}`;
@@ -106,7 +113,6 @@ export class UserService {
           user: { id, email, inviteAcceptUrl, emailSent: false, role },
           error: '',
         };
-
         try {
           const result = await this.mailer.invite({ email, inviteAcceptUrl });
           if (result.emailSent) {
@@ -118,7 +124,6 @@ export class UserService {
               publicApi: false,
             });
           }
-
           this.eventService.emit('user-invited', {
             user: owner,
             targetUserId: Object.values(toInviteUsers),
@@ -137,48 +142,35 @@ export class UserService {
             invitedUser.error = e.message;
           }
         }
-
         return invitedUser;
-      }),
+      })
     );
   }
 
   async inviteUsers(owner: User, invitations: Invitation[]) {
     const emails = invitations.map(({ email }) => email);
-    const existing = await this.userRepository.findManyByEmail(emails);
-    const existingEmails = existing.map((u) => u.email);
-
+    const existingUsers = await this.userRepository.findManyByEmail(emails);
+    const existingEmails = existingUsers.map((user) => user.email);
     const toCreate = invitations.filter(({ email }) => !existingEmails.includes(email));
-    const pending = existing.filter((u) => u.isPending);
+    const pending = existingUsers.filter((user) => user.isPending);
     const createdUsers = new Map<string, string>();
-
-    this.logger.debug(
-      toCreate.length > 1 ? `Creating ${toCreate.length} user shells…` : 'Creating 1 user shell…',
-    );
 
     try {
       await this.getManager().transaction(async (trx) => {
         await Promise.all(
           toCreate.map(async ({ email, role }) => {
-            const { user: savedUser } = await this.userRepository.createUserWithProject(
-              { email, role },
-              trx,
-            );
+            const { user: savedUser } = await this.userRepository.createUserWithProject({ email, role }, trx);
             createdUsers.set(email, savedUser.id);
-            await this.supabaseHelper.insertUser(savedUser);
-          }),
+            await SupabaseHelper.insertOrUpdateUser(savedUser);
+          })
         );
       });
     } catch (error) {
       this.logger.error('Failed to create user shells', { userShells: createdUsers });
-      throw new InternalServerError('Error during user creation', error);
+      throw new InternalServerError('An error occurred during user creation', error);
     }
 
-    // Upsert pending users
-    for (const user of pending) {
-      await this.supabaseHelper.insertUser(user);
-      createdUsers.set(user.email, user.id);
-    }
+    pending.forEach(({ email, id }) => createdUsers.set(email, id));
 
     const usersInvited = await this.sendEmails(
       owner,
@@ -192,13 +184,8 @@ export class UserService {
   async changeUserRole(user: User, targetUser: User, newRole: RoleChangeRequestDto) {
     return await this.userRepository.manager.transaction(async (trx) => {
       await trx.update(User, { id: targetUser.id }, { role: newRole.newRoleName });
-
-      const adminDowngradedToMember =
-        user.role === 'global:owner' &&
-        targetUser.role === 'global:admin' &&
-        newRole.newRoleName === 'global:member';
-
-      if (adminDowngradedToMember) {
+      const isDowngrade = user.role === 'global:owner' && targetUser.role === 'global:admin' && newRole.newRoleName === 'global:member';
+      if (isDowngrade) {
         await this.publicApiKeyService.removeOwnerOnlyScopesFromApiKeys(targetUser, trx);
       }
     });
