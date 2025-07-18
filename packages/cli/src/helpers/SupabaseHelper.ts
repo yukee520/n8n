@@ -1,16 +1,17 @@
+// packages/cli/src/helpers/SupabaseHelper.ts
 import { createClient } from '@supabase/supabase-js';
 import type { User } from '@n8n/db';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
 export class SupabaseHelper {
   static async insertUserToSupabase(user: User) {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
     const { error } = await supabase
       .from('users')
-      .insert([
+      .upsert([
         {
           id: user.id,
           email: user.email,
