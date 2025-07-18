@@ -1,5 +1,4 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-
 import type { RoleChangeRequestDto } from '@n8n/api-types';
 import type { PublicUser } from '@n8n/db';
 import { User, UserRepository } from '@n8n/db';
@@ -18,8 +17,9 @@ import { UrlService } from '@/services/url.service';
 import { UserManagementMailer } from '@/user-management/email';
 import { PublicApiKeyService } from './public-api-key.service';
 
-// ✅ Supabase helper
-import { supabase } from '@/helpers/SupabaseHelper';
+/* ✅ Supabase helper --------------------------------------- */
+import { SupabaseHelper } from '@/helpers/SupabaseHelper';
+/* ---------------------------------------------------------- */
 
 @Service()
 export class UserService {
@@ -32,7 +32,7 @@ export class UserService {
 		private readonly publicApiKeyService: PublicApiKeyService,
 	) {}
 
-	/* ---------- standard helpers (unchanged) ---------- */
+	/* ---------- basic helpers (unchanged) ---------- */
 
 	async update(userId: string, data: Partial<User>) {
 		const user = await this.userRepository.findOneBy({ id: userId });
@@ -49,16 +49,11 @@ export class UserService {
 		await this.userRepository.save(user);
 	}
 
-	/* ---------- public user conversion helpers (unchanged) ---------- */
+	/* ---------- public‑user conversion (unchanged) ---------- */
 
 	async toPublic(
 		user: User,
-		options?: {
-			withInviteUrl?: boolean;
-			inviterId?: string;
-			posthog?: PostHogClient;
-			withScopes?: boolean;
-		},
+		options?: { withInviteUrl?: boolean; inviterId?: string; posthog?: PostHogClient; withScopes?: boolean },
 	) {
 		const { password, updatedAt, authIdentities, mfaRecoveryCodes, mfaSecret, ...rest } = user;
 		const ldapIdentity = authIdentities?.find((i) => i.providerType === 'ldap');
@@ -99,13 +94,9 @@ export class UserService {
 		return await Promise.race([fetchPromise, timeoutPromise]);
 	}
 
-	/* ---------- email invite helpers (unchanged) ---------- */
+	/* ---------- email helper (unchanged) ---------- */
 
-	private async sendEmails(
-		owner: User,
-		toInviteUsers: Record<string, string>,
-		role: AssignableGlobalRole,
-	) {
+	private async sendEmails(owner: User, toInviteUsers: Record<string, string>, role: AssignableGlobalRole) {
 		const domain = this.urlService.getInstanceBaseUrl();
 		return await Promise.all(
 			Object.entries(toInviteUsers).map(async ([email, id]) => {
@@ -148,7 +139,7 @@ export class UserService {
 		);
 	}
 
-	/* ---------- MAIN CHANGE: inviteUsers inserts into Supabase ---------- */
+	/* ---------- MAIN Supabase sync logic ---------- */
 
 	async inviteUsers(owner: User, invitations: Invitation[]) {
 		const emails = invitations.map(({ email }) => email);
@@ -163,15 +154,12 @@ export class UserService {
 			toCreate.length > 1 ? `Creating ${toCreate.length} user shells…` : 'Creating 1 user shell…',
 		);
 
-		/* Create DB shells */
+		/* DB shells */
 		try {
 			await this.getManager().transaction(async (trx) => {
 				await Promise.all(
 					toCreate.map(async ({ email, role }) => {
-						const { user: savedUser } = await this.userRepository.createUserWithProject(
-							{ email, role },
-							trx,
-						);
+						const { user: savedUser } = await this.userRepository.createUserWithProject({ email, role }, trx);
 						createdUsers.set(email, savedUser.id);
 					}),
 				);
@@ -184,38 +172,39 @@ export class UserService {
 		/* include pending */
 		pending.forEach(({ email, id }) => createdUsers.set(email, id));
 
-		/* ✅ Supabase upsert */
+		/* ✅ Supabase insert / upsert */
 		for (const [email, id] of createdUsers.entries()) {
-			const { error } = await supabase.from('users').upsert({
-				id,
-				email,
-				role: invitations[0].role,
-				created_at: new Date().toISOString(),
-			});
-			if (error) this.logger.error('Supabase user insert failed', { email, id, error });
+			try {
+				await SupabaseHelper.insertUserToSupabase({
+					id,
+					email,
+					role: invitations[0].role,
+				} as User);
+			} catch (e) {
+				this.logger.error('Supabase user insert failed', { email, id, error: e });
+			}
 		}
 
-		const usersInvited = await this.sendEmails(
-			owner,
-			Object.fromEntries(createdUsers),
-			invitations[0].role,
-		);
+		/* send invites */
+		const usersInvited = await this.sendEmails(owner, Object.fromEntries(createdUsers), invitations[0].role);
 
 		return { usersInvited, usersCreated: toCreate.map(({ email }) => email) };
 	}
 
-	/* ---------- change role (unchanged) ---------- */
+	/* ---------- role change (unchanged) ---------- */
 
 	async changeUserRole(user: User, targetUser: User, newRole: RoleChangeRequestDto) {
 		return await this.userRepository.manager.transaction(async (trx) => {
 			await trx.update(User, { id: targetUser.id }, { role: newRole.newRoleName });
 
 			const adminDowngradedToMember =
-				user.role === 'global:owner' && targetUser.role === 'global:admin' && newRole.newRoleName === 'global:member';
+				user.role === 'global:owner' &&
+				targetUser.role === 'global:admin' &&
+				newRole.newRoleName === 'global:member';
 
 			if (adminDowngradedToMember) {
 				await this.publicApiKeyService.removeOwnerOnlyScopesFromApiKeys(targetUser, trx);
 			}
 		});
 	}
-			}
+}
